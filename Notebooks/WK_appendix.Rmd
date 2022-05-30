@@ -1,0 +1,478 @@
+---
+title: "Cardiovascular model in Appendix E"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  html_notebook: default
+---
+
+This notebook contains the code of the paper "Learning Physics between Digital Twins with Low-Fidelity Models and Physics-Informed Gaussian Processes". The models are fitted in rstan and the code is available in the folder "STAN/WK2". 
+
+#### Load packages
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(
+  message=FALSE,
+  warning = FALSE,
+  comment = '', 
+  fig.width = 6, 
+  fig.height = 6,
+  fig.align = 'center'
+)
+```
+
+```{r}
+# uncomment to install
+# install.packages("rstan")
+# install.packages("ggplot2")
+# install.packages("latex2exp")
+library(rstan)
+library(ggplot2)
+library(latex2exp)
+
+rstan_options(auto_write = TRUE)
+options(mc.cores = 3) # allocate 3 cores (for each model we run 3 chains in parallel)
+# Load flow data 
+d = readRDS("Data/Inflow_time.rds")
+```
+
+#### Reality and modelling choice 
+
+\begin{align}
+  \mathcal{R}: \quad & \frac{d P(t)}{d t} + \frac{P(t)}{R_2C} = \frac{Q(t)}{C} \left (1 + \frac{ R_1}{R_2} \right ) + R_1 \frac{d Q(t)}{dt} \quad \text{ (the misspesified model we use to fit the data) }\text{ [WK3] }\\
+  \eta: \quad  &  Q(t) = \frac{1}{R}P(t) + C \frac{dP(t)}{dt} \quad  \text{ (the model we use to simulate data) } \text{ [WK2] }
+\end{align}
+
+### Load posterior samples 
+
+First, we load the posterior samples from the fitted models obtained using the 'toy_paper_code.Rmd' or in the experiments folder, 'WK2_appendix.R'.
+
+```{r eval=TRUE}
+# choose some reasonable physical parameter values
+library(ggplot2)
+dat = readRDS("Data/post_wk2.rds") # posterior data for all models
+flow_time=readRDS("Data/Inflow_time.rds")
+time=flow_time$time
+post_nwd = dat$df_ycd
+attach(dat)
+attach(data)
+lP_pr = lI_pr = list()
+t1=Sys.time()
+R_val=c(1,1.15, 1.3); C_val = c(1.1,0.95,1.25) 
+RC=expand.grid(R_val,C_val) # create all possible combinations
+Rtrue=RC[,1]; Ctrue=RC[,2]
+nc=2
+nP=12
+nI=14
+Ns=9
+set.seed(123)
+Zvec=sample(seq(0.02,0.1,by=0.01), Ns, replace = T)
+nP_pred=50; nI_pred=50;
+tP_pred = time[round(seq(1,length(time), length.out = nP_pred))]
+tI_pred = time[round(seq(1,length(time), length.out = nI_pred))]
+```
+
+
+### Model 1 (no-without delta in paper, Figure 6)
+
+This is the misspecified model that does not account for model discrepancy (no-without delta in paper, Figure 6). For more details on prediction equations see Appendix C.2.
+
+Stan code:
+```{r}
+writeLines(readLines("STAN/WK2/WK2_nodelta_pred.stan"))
+```
+
+We predict for each individual $m=1,\ldots,9$
+
+```{r}
+#----------------------------------------------------------------
+# no-without delta
+#----------------------------------------------------------------
+post_nnd=l_df_nnd
+N_samples = nrow(post_nnd[[1]])
+# no-without delta model
+for (i in 1:Ns){
+  data_pred = list(nP=nc*nP, nI=nc*nI, tP=tP[i,], tI=tI[i,], yP=yP[i,], yI=yI[i,]
+                   , tP_pred = tP_pred, tI_pred=tI_pred, nP_pred=nP_pred, nI_pred=nI_pred
+                   , alpha=post_nnd[[i]]$alpha, rho=post_nnd[[i]]$rho
+                   , sigmaP=post_nnd[[i]]$sigmaP, sigmaI=post_nnd[[i]]$sigmaI
+                   , R=post_nnd[[i]]$R, C=post_nnd[[i]]$C, N_samples=N_samples
+  )
+  
+  pred = stan(file = "STAN/WK2/WK2_nodelta_pred.stan",
+              data = data_pred,
+              chains = 1, iter = 1, seed=123,
+              algorithm = "Fixed_param")
+  ex_pred=extract(pred)
+  Pvec = ex_pred$y_P
+  Ivec = ex_pred$y_I
+  P_post=matrix(NA, ncol = 4, nrow = nP_pred)
+  # calculate mean and 95% CIs
+  for(n in 1:nP_pred){
+    ind=(1 +(n-1)*N_samples):(n*N_samples)
+    v = Pvec[ind]
+    P_post[n,] = c(mean(v), quantile(v, probs = 0.025), quantile(v, probs = 0.975),tP_pred[n])
+  }
+  I_post=matrix(NA, ncol = 4, nrow = nI_pred)
+  for(n in 1:nI_pred){
+    ind=(1 +(n-1)*N_samples):(n*N_samples)
+    v = Ivec[ind]
+    I_post[n,] = c(mean(v), quantile(v, probs = 0.025), quantile(v, probs = 0.975),tI_pred[n])
+  }
+  
+  lP_pr[[i]]=P_post
+  lI_pr[[i]]=I_post
+}
+# prepare the data for plotting
+ID = paste0(Zvec, " | ID = ", 1:Ns)
+R1 = paste("expression(R[1] = )", Zvec)
+P_nnd = data.frame(do.call(rbind, lP_pr))
+P_nnd$ID = rep(ID, each = nP_pred)
+P_nnd$t = rep(tP_pred, Ns)
+colnames(P_nnd)[1:4] = c("mean", "lower", "upper", "time")
+P_nnd$sharing = "no-without delta"
+
+I_nnd = data.frame(do.call(rbind, lI_pr))
+I_nnd$ID = rep(ID, each = nI_pred)
+I_nnd$t = rep(tI_pred, Ns)
+colnames(I_nnd)[1:4] = c("mean", "lower", "upper", "time")
+I_nnd$sharing = "no-without delta"
+```
+
+
+### Model 2 (no-with delta in paper, Figure 6)
+
+Now we account for model discrepancy $\delta_m(x_m)\sim GP(0,K_\delta(x_m,x_m')),$ where we use the squared exponential kernel $K_\delta(x_m,x_m') = \alpha_m^2 \exp\left(-\frac{(x_m-x_m')^2}{2\rho_m^2}\right).$ More details on the prediction equations are given in the Appendix C.2.
+
+Stan code:
+```{r}
+writeLines(readLines("STAN/WK2/WK2_delta_pred.stan"))
+```
+
+We predict for each individual $m=1,\ldots,9$
+
+```{r}
+post_nwd=l_df_nwd
+N_samples = nrow(post_nwd[[1]])
+# no-with delta model
+for (i in 1:Ns){
+  data_pred = list(nP=nc*nP, nI=nc*nI, tP=tP[i,], tI=tI[i,], yP=yP[i,], yI=yI[i,]
+                   , tP_pred = tP_pred, tI_pred=tI_pred, nP_pred=nP_pred, nI_pred=nI_pred
+                   , alpha=post_nwd[[i]]$alpha, rho=post_nwd[[i]]$rho, alpha_d=post_nwd[[i]]$alpha_d
+                   , rho_d=post_nwd[[i]]$rho_d, sigmaP=post_nwd[[i]]$sigmaP, sigmaI=post_nwd[[i]]$sigmaI
+                   , R=post_nwd[[i]]$R, C=post_nwd[[i]]$C, N_samples=N_samples
+  )
+  
+  pred = stan(file = "STAN/WK2/WK2_delta_pred.stan",
+              data = data_pred,
+              chains = 1, iter = 1, seed=123,
+              algorithm = "Fixed_param")
+  ex_pred=extract(pred)
+  Pvec = ex_pred$y_P
+  Ivec = ex_pred$y_I
+  P_post=matrix(NA, ncol = 4, nrow = nP_pred)
+  for(n in 1:nP_pred){
+    ind=(1 +(n-1)*N_samples):(n*N_samples)
+    v = Pvec[ind]
+    P_post[n,] = c(mean(v), quantile(v, probs = 0.025), quantile(v, probs = 0.975),tP_pred[n])
+  }
+  I_post=matrix(NA, ncol = 4, nrow = nI_pred)
+  for(n in 1:nI_pred){
+    ind=(1 +(n-1)*N_samples):(n*N_samples)
+    v = Ivec[ind]
+    I_post[n,] = c(mean(v), quantile(v, probs = 0.025), quantile(v, probs = 0.975),tI_pred[n])
+  }
+  
+  lP_pr[[i]]=P_post
+  lI_pr[[i]]=I_post
+}
+# prepare data for plotting
+# ID = paste0(Zvec, " | ID = ", 1:Ns)
+P_nwd = data.frame(do.call(rbind, lP_pr))
+P_nwd$ID = rep(ID, each = nP_pred)
+P_nwd$t = rep(tP_pred, Ns)
+colnames(P_nwd)[1:4] = c("mean", "lower", "upper", "time")
+P_nwd$sharing = "no-with delta"
+
+I_nwd = data.frame(do.call(rbind, lI_pr))
+I_nwd$ID = rep(ID, each = nI_pred)
+I_nwd$t = rep(tI_pred, Ns)
+colnames(I_nwd)[1:4] = c("mean", "lower", "upper", "time")
+I_nwd$sharing = "no-with delta"
+```
+
+
+### Model 3 (yes/common delta, Figure 6)
+
+We allow individuals to share information about the physical parameters $u_m, m=1,2,\ldots,10$ through a global level parameter as described in Section 3.2. The model assumes same discrepancy parameters for all individuals.
+
+We predict using the same equations as before, but now with the posterior distributions obtained by the fit of Model 3 (yes/common delta).
+
+```{r}
+post_ycd = list()
+
+for(i in 1:Ns){
+  v=c(paste0("alpha.",i), paste0("rho.",i), "alpha_d", "rho_d", "sigmaP", "sigmaI", paste0("R.",i), paste0("C.", i))
+  df_temp=df_ycd[, v]
+  colnames(df_temp)=c("alpha", "rho", "alpha_d", "rho_d", "sigmaP", "sigmaI", "R", "C")
+  post_ycd[[i]]=df_temp
+}
+
+# yes/common delta model
+for (i in 1:Ns){
+  data_pred = list(nP=nc*nP, nI=nc*nI, tP=tP[i,], tI=tI[i,], yP=yP[i,], yI=yI[i,]
+                   , tP_pred = tP_pred, tI_pred=tI_pred, nP_pred=nP_pred, nI_pred=nI_pred
+                   , alpha=post_ycd[[i]]$alpha, rho=post_ycd[[i]]$rho, alpha_d=post_ycd[[i]]$alpha_d
+                   , rho_d=post_ycd[[i]]$rho_d, sigmaP=post_ycd[[i]]$sigmaP, sigmaI=post_ycd[[i]]$sigmaI
+                   , R=post_ycd[[i]]$R, C=post_ycd[[i]]$C, N_samples=N_samples
+  )
+  
+  pred = stan(file = "STAN/WK2/WK2_delta_pred.stan",
+              data = data_pred,
+              chains = 1, iter = 1, seed=123,
+              algorithm = "Fixed_param")
+  ex_pred=extract(pred)
+  Pvec = ex_pred$y_P
+  Ivec = ex_pred$y_I
+  P_post=matrix(NA, ncol = 4, nrow = nP_pred)
+  for(n in 1:nP_pred){
+    ind=(1 +(n-1)*N_samples):(n*N_samples)
+    v = Pvec[ind]
+    P_post[n,] = c(mean(v), quantile(v, probs = 0.025), quantile(v, probs = 0.975),tP_pred[n])
+  }
+  I_post=matrix(NA, ncol = 4, nrow = nI_pred)
+  for(n in 1:nI_pred){
+    ind=(1 +(n-1)*N_samples):(n*N_samples)
+    v = Ivec[ind]
+    I_post[n,] = c(mean(v), quantile(v, probs = 0.025), quantile(v, probs = 0.975),tI_pred[n])
+  }
+  
+  lP_pr[[i]]=P_post
+  lI_pr[[i]]=I_post
+}
+
+# ID = paste0(Zvec, "| ID = ", 1:Ns)
+P_ycd = data.frame(do.call(rbind, lP_pr))
+P_ycd$ID = rep(ID, each = nP_pred)
+P_ycd$t = rep(tP_pred, Ns)
+colnames(P_ycd)[1:4] = c("mean", "lower", "upper", "time")
+P_ycd$sharing = "yes/common delta"
+
+I_ycd = data.frame(do.call(rbind, lI_pr))
+I_ycd$ID = rep(ID, each = nI_pred)
+I_ycd$t = rep(tI_pred, Ns)
+colnames(I_ycd)[1:4] = c("mean", "lower", "upper", "time")
+I_ycd$sharing = "yes/common delta"
+```
+
+### Model 4 (yes/shared delta, Figure 6)
+
+We allow individuals to share information about both the physical parameters $u_m, m=1,2,\ldots,9$ and the discrepancy through a global level parameters for both as described in Section 3.1. The model assumes same discrepancy parameters for all individuals.
+
+We predict using the same equations as before, but now with the posterior distributions obtained by the fit of Model 4 (yes/shared delta).
+
+```{r}
+#-------------------------------------------------------
+# yes/ shared delta
+#----------------------------------------------------------------
+post_ysd = list()
+
+for(i in 1:Ns){
+  v=c(paste0("alpha.",i), paste0("rho.",i), paste0("alpha_d.",i), paste0("rho_d.",i), "sigmaP", "sigmaI", paste0("R.",i), paste0("C.", i))
+  df_temp=df_ysd[, v]
+  colnames(df_temp)=c("alpha", "rho", "alpha_d", "rho_d", "sigmaP", "sigmaI", "R", "C")
+  post_ysd[[i]]=df_temp
+}
+
+# yes/common delta model
+for (i in 1:Ns){
+  data_pred = list(nP=nc*nP, nI=nc*nI, tP=tP[i,], tI=tI[i,], yP=yP[i,], yI=yI[i,]
+                   , tP_pred = tP_pred, tI_pred=tI_pred, nP_pred=nP_pred, nI_pred=nI_pred
+                   , alpha=post_ysd[[i]]$alpha, rho=post_ysd[[i]]$rho, alpha_d=post_ysd[[i]]$alpha_d
+                   , rho_d=post_ysd[[i]]$rho_d, sigmaP=post_ysd[[i]]$sigmaP, sigmaI=post_ysd[[i]]$sigmaI
+                   , R=post_ysd[[i]]$R, C=post_ysd[[i]]$C, N_samples=N_samples
+  )
+  
+  pred = stan(file = "STAN/WK2/WK2_delta_pred.stan",
+              data = data_pred,
+              chains = 1, iter = 1, seed=123,
+              algorithm = "Fixed_param")
+  ex_pred=extract(pred)
+  Pvec = ex_pred$y_P
+  Ivec = ex_pred$y_I
+  P_post=matrix(NA, ncol = 4, nrow = nP_pred)
+  for(n in 1:nP_pred){
+    ind=(1 +(n-1)*N_samples):(n*N_samples)
+    v = Pvec[ind]
+    P_post[n,] = c(mean(v), quantile(v, probs = 0.025), quantile(v, probs = 0.975),tP_pred[n])
+  }
+  I_post=matrix(NA, ncol = 4, nrow = nI_pred)
+  for(n in 1:nI_pred){
+    ind=(1 +(n-1)*N_samples):(n*N_samples)
+    v = Ivec[ind]
+    I_post[n,] = c(mean(v), quantile(v, probs = 0.025), quantile(v, probs = 0.975),tI_pred[n])
+  }
+  
+  lP_pr[[i]]=P_post
+  lI_pr[[i]]=I_post
+}
+t2=Sys.time()
+
+# ID = paste0(Zvec, "| ID = ", 1:Ns)
+P_ysd = data.frame(do.call(rbind, lP_pr))
+P_ysd$ID = rep(ID, each = nP_pred)
+P_ysd$t = rep(tP_pred, Ns)
+colnames(P_ysd)[1:4] = c("mean", "lower", "upper", "time")
+P_ysd$sharing = "yes/shared delta"
+
+I_ysd = data.frame(do.call(rbind, lI_pr))
+I_ysd$ID = rep(ID, each = nI_pred)
+I_ysd$t = rep(tI_pred, Ns)
+colnames(I_ysd)[1:4] = c("mean", "lower", "upper", "time")
+I_ysd$sharing = "yes/shared delta"
+```
+
+#### Plot pressure predictions (Figure 5 in Appendix)
+
+```{r fig.width = 8, fig.height = 6}
+P_pred = rbind(P_nwd, P_ysd, P_ycd, P_nnd)
+df_true = dat$P_true
+P_true = data.frame(P=as.vector(dat$P_true), t = rep(time,Ns), ID = rep(ID, each = length(time)))
+
+P_obs = data.frame(P=as.vector(t(yP)), t = as.vector(t(tP)), ID = rep(ID, each = nc*nP))
+
+# New facet label names 
+appender = function(string) {
+  TeX(paste("$R_1= $", string))
+}
+
+pl_WK_pred_P=ggplot()+
+  geom_point(data=P_obs, aes(x=t, y=P, shape="observed"))+
+  geom_ribbon(data = P_pred, aes(x=t,ymin=lower,ymax=upper, fill=sharing),alpha=0.3)+# alpha=0.38
+  geom_line(data=P_pred, aes(x=t, y=mean, color= sharing), size=0.7)+
+  geom_line(data=P_true, aes(x=t, y=P, linetype="true"), size=0.6)+
+  facet_wrap(~ID, nrow = 3,labeller = as_labeller(appender, default = label_parsed))+
+  theme_bw()+
+  xlab("time (sec)")+ylab("pressure (mmHg)")+
+  theme(legend.position = "bottom", legend.title = element_blank())+
+  scale_color_manual(
+    breaks=c('no-without delta','no-with delta', "yes/common delta", "yes/shared delta", "true"),
+    values=c("magenta","firebrick","dodgerblue4", "forestgreen", "black")
+  )+
+  scale_linetype_manual(breaks=c('no-without delta','no-with delta', "yes/common delta", "yes/shared delta", "true"),
+                        values=c(1,1,1, 1, 2)
+  )+
+  scale_fill_manual(
+    breaks=c('no-without delta','no-with delta', "yes/common delta", "yes/shared delta"),
+    values=c("magenta","firebrick","dodgerblue4", "forestgreen")
+  )
+
+pl_WK_pred_P
+# ggsave("Figs/WK_pred_P.pdf", plot = pl_WK_pred_P, width = 20, height = 15, units = "cm")
+```
+
+
+#### Plot flow predictions (Figure 6 in Appendix)
+
+```{r fig.width = 8, fig.height = 6}
+I_pred = rbind(I_nwd, I_ysd, I_ycd, I_nnd)
+df_true_I = dat$I_true
+I_true = data.frame(I=as.vector(flow_time$inflow), t = rep(time,Ns), ID = rep(ID, each = length(time)))
+
+I_obs = data.frame(I=as.vector(t(yI)), t = as.vector(t(tI)), ID = rep(ID, each = nc*nI))
+unique(I_pred$sharing)
+
+
+pl_WK_pred_I=ggplot()+
+  geom_point(data=I_obs, aes(x=t, y=I, shape="observed"))+
+  geom_ribbon(data = I_pred, aes(x=t,ymin=lower,ymax=upper, fill=sharing),alpha=0.3)+# alpha=0.38
+  geom_line(data=I_pred, aes(x=t, y=mean, color= sharing), size=0.7)+
+  geom_line(data=I_true, aes(x=t, y=I, linetype="true"), size=0.6)+
+  facet_wrap(~ID, nrow = 3,labeller = as_labeller(appender, default = label_parsed))+
+  theme_bw()+
+  xlab("time (sec)")+ylab("flow (ml/min)")+
+  theme(legend.position = "bottom", legend.title = element_blank())+
+  scale_color_manual(
+    breaks=c('no-without delta','no-with delta', "yes/common delta", "yes/shared delta", "true"),
+    values=c("magenta","firebrick","dodgerblue4", "forestgreen", "black")
+  )+
+  scale_linetype_manual(breaks=c('no-without delta','no-with delta', "yes/common delta", "yes/shared delta", "true"),
+                        values=c(1,1,1, 1, 2)
+  )+
+  scale_fill_manual(
+    breaks=c('no-without delta','no-with delta', "yes/common delta", "yes/shared delta"),
+    values=c("magenta","firebrick","dodgerblue4", "forestgreen")
+  )
+
+pl_WK_pred_I
+# ggsave("Figs/WK_pred_I.pdf", plot = pl_WK_pred_I, width = 20, height = 15, units = "cm")
+```
+
+#### Plot posteriors of R for all individuals (Figure 3 in Appendix)
+
+```{r fig.width = 8, fig.height = 6}
+R_nnd = R_nwd = R_ycd = R_ysd = C_nnd = C_nwd = C_ycd = C_ysd = c()
+
+for(i in 1:Ns){
+  R_temp = post_nnd[[i]]$R
+  R_nnd = c(R_nnd, R_temp)
+  R_temp = post_nwd[[i]]$R
+  R_nwd = c(R_nwd, R_temp)
+  R_temp = post_ycd[[i]]$R
+  R_ycd = c(R_ycd, R_temp)
+  R_temp = post_ysd[[i]]$R
+  R_ysd = c(R_ysd, R_temp)
+  C_temp = post_nnd[[i]]$C
+  C_nnd = c(C_nnd, C_temp)
+  C_temp = post_nwd[[i]]$C
+  C_nwd = c(C_nwd, C_temp)
+  C_temp = post_ysd[[i]]$C
+  C_ycd = c(C_ycd, C_temp)
+  C_temp = post_ycd[[i]]$C
+  C_ysd = c(C_ysd, C_temp)
+}
+id_post = rep(as.factor(1:Ns), each = N_samples)
+shr = c('no-without delta','no-with delta', "yes/common delta", "yes/shared delta")
+Rpost=data.frame(R = c(R_nnd, R_nwd, R_ycd, R_ysd), ID = rep(id_post,4), sharing = rep(rep(shr, each = Ns*N_samples),4))
+Cpost=data.frame(C = c(C_nnd, C_nwd, C_ycd, C_ysd), ID = rep(id_post,4), sharing = rep(rep(shr, each = Ns*N_samples),4))
+
+# R post
+(pl_R=ggplot() + 
+    geom_violin(data = Rpost, aes(x = ID, y=R, color = sharing), size=0.7)+
+    theme_bw()+ 
+    theme(axis.title.y = element_text(size = rel(1.5)), legend.position = "none")+
+    geom_point(data = data.frame(R = Rtrue, ID = as.factor(1:Ns)), aes(x = ID, y = R, shape = "true"),size=1)+
+    facet_wrap(sharing~.)+
+    xlab("ID")+
+    scale_color_manual(
+      breaks=c('no-without delta', 'no-with delta', "yes/common delta", "yes/shared delta"),
+      values=c("magenta","firebrick","dodgerblue4", "forestgreen"))
+)
+# ggsave("Figs/post_WK_R.pdf", plot = pl_R, width = 18, height = 12, units = "cm")
+```
+
+
+#### Plot posteriors of C for all individuals (Figure 3 in Appendix)
+
+```{r fig.width = 8, fig.height = 6}
+# C post
+(pl_C=ggplot() + 
+  geom_violin(data = Cpost, aes(x = ID, y=C, color = sharing),size=0.7)+
+  theme_bw()+ 
+  theme(axis.title.y = element_text(size = rel(1.5)), legend.position = "none")+
+  geom_point(data = data.frame(C = Ctrue, ID = as.factor(1:Ns)), aes(x = ID, y = C, shape = "true"),size=1)+
+  facet_wrap(sharing~.)+
+  xlab("ID")+
+  scale_color_manual(
+    breaks=c('no-without delta', 'no-with delta', "yes/common delta", "yes/shared delta"),
+    values=c("magenta","firebrick","dodgerblue4", "forestgreen")))
+# ggsave("Figs/post_WK_C.pdf", plot = pl_C, width = 18, height = 12, units = "cm")
+```
+
+
+### Session information
+
+```{r}
+sessionInfo()
+```

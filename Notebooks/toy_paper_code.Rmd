@@ -1,0 +1,258 @@
+---
+title: "Toy example in Section 4"
+header-includes:
+   - \usepackage{bbm}
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+This notebook contains the code of the paper "Learning Physics between Digital Twins with Low-Fidelity Models and Physics-Informed Gaussian Processes". The models are fitted in rstan and the code is available in the folder "STAN/toy". 
+
+#### Load packages
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(
+  message=FALSE,
+  warning = FALSE,
+  comment = '', 
+  fig.width = 5, 
+  fig.height = 5,
+  fig.align = 'center'
+)
+```
+
+```{r}
+# uncomment to install
+# install.packages("rstan")
+# install.packages("ggplot2")
+# install.packages("SAVE")
+library(rstan)
+library(ggplot2)
+library(SAVE) # package with the data
+rstan_options(auto_write = TRUE)
+options(mc.cores = 3) # allocate 3 cores (for each model we run 3 chains in parallel)
+```
+
+#### Reality and modelling choice
+**Note** that in the paper there is a mistake in the presentation. The coefficients of the true model $\mathcal{R}$ and model $M$ are swapped and the correct models are the following
+\begin{align*}
+    y^\mathcal{R}(x) &= 3.5\cdot \exp(-u\cdot x)+b+\varepsilon \quad  \text{ (the model we use to simulate data) }\\
+    \eta(x,u) &= 5\cdot \exp(-u\cdot x) \quad \text{ (the misspesified model we use to fit the data) }
+\end{align*}
+
+```{r}
+R = function(u,x,b) 3.5*exp(-u*x)+b
+sd_noise = 0.3
+```
+
+
+```{r}
+data("synthfield") # data from the rpackage SAVE
+X_loc = unique(synthfield$x) 
+
+# simulate data for different u val and add iid noise
+u_val = seq(0.8,1.7,by=0.1)
+dl=list()
+set.seed(123)
+offsets=runif(length(u_val),0.5,5)
+
+xobs = c(unique(synthfield$x),unique(synthfield$x),unique(synthfield$x)); N=length(xobs); # create 3 replicates 
+X_mat = matrix(NA, nrow = length(u_val), ncol = length(xobs))
+set.seed(0)
+dev=c(runif(length(u_val), 0.1,0.25)) 
+
+for(i in 1:nrow(X_mat)){
+  X_mat[i,] = xobs+dev[i] # create different input locations for each individual
+}
+for(i in seq_along(u_val)){
+  set.seed(0)
+  y=R(u_val[i], xobs, offsets[i])+rnorm(N,0,sd=sd_noise); # add i.i.d. N(0,0.3^2) noise
+  dl[[i]] = list(x= X_mat[i,], y = y, N = N, x_pred=X_mat[i,], N_pred=N)
+}
+y = matrix(NA, nrow = length(u_val), ncol = length(xobs))
+for(i in 1:nrow(y)) y[i,] = dl[[i]]$y
+
+id = seq_along(u_val) # individual id
+Ns = length(id) # total number of individuals
+data_population = list(x= X_mat, y = y, N = N, Ns=Ns, id=id)
+```
+
+```{r echo=TRUE}
+# create real data (noise free) for plotting 
+X = seq(min(X_mat), max(X_mat), length.out = 50)
+y_real = matrix(NA, nrow = Ns, ncol = length(X))
+for(i in seq_along(u_val)){
+  y_real[i,] = R(u_val[i],X,offsets[i]) # real data for plotting
+}
+id_new = paste0("ID = ", 1:Ns)
+real_data = data.frame(x=rep(X,Ns), y = as.vector(t(y_real)), ID = rep(id_new, each=length(X)))
+obs_data = data.frame(x=as.vector(t(X_mat)), y = as.vector(t(y)), ID = rep(id_new, each=ncol(X_mat)))
+
+pl_obs_toy=ggplot()+
+  geom_line(data=real_data, aes(x=x,y=y), color="dodgerblue3")+
+  geom_point(data=obs_data, aes(x=x,y=y), color="black")+
+  facet_wrap(ID~., nrow = 2)#+theme_bw()
+pl_obs_toy
+```
+
+### Model 1 (no-without delta in paper, Figure 3)
+
+This is the misspecified model that does not account for model discrepancy (no-without delta in paper, Figure 3), and it is the following regression model
+$$
+y(x_m) = 5\cdot \exp(-u_m\cdot x_m) + \varepsilon, \text{ where }\varepsilon \sim N(0,\sigma^2).
+$$
+This is the following probabilistic model
+$$
+\mathbf{y} \sim N(5\cdot \exp(-u_m\cdot \mathbf{X}_m), \sigma^2I),
+$$
+where we assign priors to $u_m$ (same for each individual) and $\sigma$ (for more details see Appendix).
+
+Stan code:
+```{r}
+writeLines(readLines('STAN/toy/toy_nodelta.stan'))
+```
+We fit the model to each individual data set and we plot the trace for the last individual
+```{r}
+lu_no=list()
+for(i in seq_along(u_val)){
+  fit_no_without_delta = stan(
+    file='STAN/toy/toy_nodelta.stan', # without delta
+    data=dl[[i]],
+    chains=3,
+    iter=2*1000,
+    seed=123
+  )
+  lu_no[[i]] = extract(fit_no_without_delta)$u
+}
+stan_trace(fit_no_without_delta, size=0.2)
+```
+
+
+### Model 2 (no-with delta in paper, Figure 3)
+
+Now we account for model discrepancy $\delta_m(x_m)\sim GP(0,K_\delta(x_m,x_m')),$ where we use the squared exponential kernel $K_\delta(x_m,x_m') = \alpha_m^2 \exp\left(-\frac{(x_m-x_m')^2}{2\rho_m^2}\right)$ and we have the following formulation
+$$
+y^R(\mathbf{x}) = \eta(\mathbf{x},\boldsymbol{\phi})+\delta(\mathbf{x})+\varepsilon, \text{ where } \varepsilon \sim N(0,\sigma^2).
+$$
+This is equivalent to
+$$
+y^\mathcal{R} \sim GP(5\cdot \exp(-u_m\cdot \mathbf{X}_m), K_\delta(\mathbf{X}_m,\mathbf{X}_m\mid \boldsymbol{\omega}_m)+\sigma^2I).
+$$
+Stan code:
+```{r}
+writeLines(readLines('STAN/toy/toy_delta.stan'))
+```
+
+We fit this model to each individual data set separately
+
+```{r}
+lu=list()
+for(i in seq_along(u_val)){
+  fit_no_with_delta = stan(
+    file='STAN/toy/toy_delta.stan', # with delta
+    data=dl[[i]],
+    chains=3,
+    iter=2*1000,
+    seed=123
+  )
+  lu[[i]] = extract(fit_no_with_delta)$u
+}
+stan_trace(fit_no_with_delta, size=0.2)
+```
+
+
+### Model 3 (yes/common delta, Figure 3)
+
+We allow individuals to share information about the physical parameters $u_m, m=1,2,\ldots,10$ through a global level parameter as described in Section 3.2. The model assumes same discrepancy parameters for all individuals.
+
+Stan code:
+```{r}
+writeLines(readLines('STAN/toy/toy_common_delta.stan'))
+```
+
+
+```{r}
+# shared u common delta model
+fit_yes_common_delta = stan(file='STAN/toy/toy_common_delta.stan',
+                            data=data_population,
+                            chains=3,
+                            iter=2*1000,
+                            seed=123
+)
+names(fit_yes_common_delta)
+stan_trace(fit_yes_common_delta, pars = "u", size=0.2)
+ex_ycd=extract(fit_yes_common_delta)
+```
+
+### Model 4 (yes/shared delta, Figure 3)
+
+We allow individuals to share information about both the physical parameters $u_m, m=1,2,\ldots,10$ and the discrepancy through a global level parameters for bothas described in Section 3.1. The model assumes same discrepancy parameters for all individuals.
+
+Stan code:
+```{r}
+writeLines(readLines('STAN/toy/toy_shared_delta.stan'))
+```
+
+```{r}
+fit_yes_shared_delta = stan(file='STAN/toy/toy_shared_delta.stan',
+                            data=data_population,
+                            chains=3,
+                            iter=2*1000,
+                            seed=123
+)
+names(fit_yes_shared_delta)
+stan_trace(fit_yes_shared_delta, pars = "u", size=0.2)
+ex_ysd=extract(fit_yes_shared_delta)
+```
+
+#### Plot 95% CIs for all methods (Figure 3 in the paper) 
+
+```{r echo=TRUE,fig.width = 8, fig.height = 3}
+nodelta_cis=m_nwd=matrix(NA,length(u_val),2)
+fn_s = function(x) c(quantile(x, probs = c(0.025,0.975)))
+
+for(i in seq_along(u_val)){
+  nodelta_cis[i,] = fn_s(lu_no[[i]])
+  m_nwd[i,] = fn_s(lu[[i]])
+}
+
+ysd_cis=data.frame(t(apply(ex_ysd$u,2,quantile,probs=c(0.025,0.975))))
+yes_common_delta=data.frame(t(apply(ex_ycd$u,2,quantile,probs=c(0.025,0.975))))
+
+m_nwd=data.frame(m_nwd)
+colnames(m_nwd) = colnames(ysd_cis)
+nodelta_cis=data.frame(nodelta_cis)
+colnames(nodelta_cis) = colnames(ysd_cis)
+m_nwd$u_true = u_val
+m_nwd$sharing= "no-with delta"
+nodelta_cis$u_true = u_val
+nodelta_cis$sharing= "no-without delta"
+yes_common_delta$u_true=u_val
+yes_common_delta$sharing="yes/common delta"
+ysd_cis$u_true=u_val
+ysd_cis$sharing="yes/shared delta"
+
+df_CIs = rbind(m_nwd,yes_common_delta,ysd_cis,nodelta_cis)
+colnames(df_CIs)[1:2] = c("lower","upper")
+df_CIs$id = rep(id,4)
+
+ggplot(df_CIs,aes(x = as.factor(id), y = u_true, ymin = lower, ymax = upper, color=sharing))+ 
+    geom_errorbar(width = 0.3, size=0.9) +
+    theme_classic()+ 
+    geom_point(size = 1.5, color="black")+
+    ylab("u")+xlab("ID")+
+    annotate("text", x=1.5, y=4.2, label= "95% CIs", size=6)+
+    theme(axis.title.y = element_text(size = rel(1.5)))+
+    scale_color_manual(
+      breaks=c('no-without delta', 'no-with delta', "yes/common delta", "yes/shared delta"),
+      values=c("magenta","firebrick","dodgerblue4", "forestgreen"))
+```
+
+### Session information
+
+```{r}
+sessionInfo()
+```
