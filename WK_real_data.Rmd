@@ -1,0 +1,338 @@
+---
+title: "Cardiovascular model in Section 5 | Real data"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  html_notebook: default
+---
+
+This notebook contains the code of the paper "Learning Physics between Digital Twins with Low-Fidelity Models and Physics-Informed Gaussian Processes". The models are fitted in rstan and the code is available in the folder "STAN/WK2_periodic". 
+
+#### Load packages
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(
+  message=FALSE,
+  warning = FALSE,
+  comment = '', 
+  fig.width = 6, 
+  fig.height = 3,
+  fig.align = 'center'
+)
+```
+
+```{r}
+# uncomment to install
+# install.packages("rstan")
+# install.packages("ggplot2")
+# install.packages("latex2exp")
+library(rstan)
+library(ggplot2)
+library(latex2exp)
+rstan_options(auto_write = TRUE)
+options(mc.cores = 3) # allocate 3 cores (for each model we run 3 chains in parallel)
+```
+
+#### Data
+
+We use real data from 8 individuals obtained by clinical trial. 
+```{r}
+data_trial = readRDS("Data/data_trial.rds")
+```
+
+```{r}
+nc=2
+Ns=data_trial$Ns
+yP=data_trial$yP
+tP=data_trial$tP
+yI=data_trial$yI
+tI=data_trial$tI
+nP=data_trial$nP
+nI=data_trial$nI
+ID = paste0("ID = ", 1:Ns)
+df_Pobs = data.frame(pressure = as.vector(t(yP)), time = as.vector(t(tP)), ID = rep(ID, each=nP))
+df_Qobs = data.frame(inflow = as.vector(t(yI)), time = as.vector(t(tI)), ID = rep(ID, each=nI))
+
+# ggplot()+
+#   geom_point(data=df_Pobs, aes(x=time,y=pressure), color="black", size=0.5)+
+#   facet_wrap(ID~., nrow = 2)+theme_bw()+xlab("time (sec)")+ ylab("pressure (mmHg)")
+# 
+# ggplot()+
+#   geom_point(data=df_Qobs, aes(x=time,y=inflow), color="black", size=0.5)+
+#   facet_wrap(ID~., nrow = 2)+theme_bw()+xlab("time (sec)")+ ylab("inflow (ml/min)")
+```
+```{r, fig.height=2.5}
+ind_4 = df_Pobs$ID %in% c("ID = 2","ID = 4","ID = 6","ID = 8")
+# pl_P=ggplot()+
+#   geom_point(data=df_Pobs[ind_4, ], aes(x=time,y=pressure), color="black", size=0.5)+
+#   facet_wrap(ID~., nrow = 1)+theme_bw()+xlab("time (sec)")+ ylab("pressure (mmHg)")+
+#   theme(axis.title = element_text(size = 16))
+# pl_P
+# ggsave("Figs/P_trial.pdf", plot = pl_P, width = 20, height = 7, units = "cm")
+```
+
+#### Models
+
+### Model 1 (no-without $\delta(t)$ in paper, Figure 9)
+
+This is the misspecified model that does not account for model discrepancy (no-without delta in paper, Figure 6). For more details on the physics-informed Gaussian process prior see Appendix E.1.
+
+Stan code:
+```{r}
+# writeLines(readLines('STAN/WK2_periodic/WK2_per_nodelta.stan'))
+```
+
+```{r}
+post_nnd=post_nwd=l_df_nnd=l_df_nwd=list()
+```
+
+We fit the model to each individual data set and we plot the trace for the last individual
+
+```{r}
+#-------------------------------------------------
+# WK2 PI prior / no delta (magenta model)
+for(i in 1:Ns){
+  data_ind = list(nP=nP, nI=nI, tP=matrix(tP[i,],ncol=1), tI=matrix(tI[i,],ncol=1), yP=yP[i,], yI=yI[i,], yDia=data_trial$yDia, p=data_trial$p[i])
+  fit_nnd = stan(file= "STAN/WK2_periodic/WK2_per_nodelta.stan", 
+                  data=data_ind,
+                  chains=3,
+                  iter=1000,
+                  seed=123
+  )
+  post_nnd[[i]]=extract(fit_nnd)
+  l_df_nnd[[i]]=data.frame(extract(fit_nnd))
+}
+stan_trace(fit_nnd, size=0.2)
+```
+
+
+### Model 2 (no-with $\delta(t)$ in paper, Figure 9)
+
+Now we account for model discrepancy $\delta_m(x_m)\sim GP(0,K_\delta(x_m,x_m')),$ where we use the squared exponential kernel $K_\delta(x_m,x_m') = \alpha_m^2 \exp\left(-\frac{(x_m-x_m')^2}{2\rho_m^2}\right).$ More details about the model are given in the Appendix E.1.
+
+Stan code:
+```{r}
+# writeLines(readLines("STAN/WK2_periodic/WK2_delta_per.stan"))
+```
+
+We fit this model to each individual data set separately
+
+```{r}
+# WK2 PI prior / with pressure delta (red model)
+fit_smr=list()
+for(i in 1:Ns){
+  data_ind = list(nP=nP, nI=nI, tP=matrix(tP[i,],ncol=1), tI=matrix(tI[i,],ncol=1), yP=yP[i,], yI=yI[i,], yDia=data_trial$yDia, p=data_trial$p[i])
+  fit_nwd = stan(file= "STAN/WK2_periodic/WK2_delta_per.stan", 
+                 data=data_ind,
+                 chains=3,
+                 iter=1000,
+                 seed=123
+  )
+  fit_smr[[i]]=summary(fit_nwd)$summary
+  post_nwd[[i]]=extract(fit_nwd)
+  l_df_nwd[[i]]=data.frame(extract(fit_nwd))
+}
+stan_trace(fit_nwd)
+```
+
+
+### Model 3 (yes/common $\delta(t)$ in paper, Figure 9)
+
+We allow individuals to share information about the physical parameters $u_m, m=1,2,\ldots,8$ through a global level parameter as described in Section 3.3. The model assumes same discrepancy parameters for all individuals.
+
+Stan code:
+```{r}
+# writeLines(readLines("STAN/WK2_periodic/WK2_common_delta_per.stan"))
+```
+
+```{r,fig.height=5}
+#-------------------------------------------------
+# shared R,C common delta (blue model)
+fit_yes_common_delta = stan(file="STAN/WK2_periodic/WK2_common_delta_per.stan",
+                            data=data_trial,
+                            chains=3,
+                            iter=1000,
+                            seed=0
+)
+stan_trace(fit_yes_common_delta, pars = c("R","C"), size=0.2)
+ex_ycd=extract(fit_yes_common_delta)
+df_ycd =data.frame(ex_ycd)
+```
+
+### Model 4 (yes/shared $\delta(t)$ in paper, Figure 9)
+
+We allow individuals to share information about both the physical parameters $u_m, m=1,2,\ldots,8$ and the discrepancy through a global level parameters for both as described in Section 3.1. The model assumes same discrepancy parameters for all individuals.
+
+Stan code:
+```{r}
+# writeLines(readLines("STAN/WK2_periodic/WK2_shared_delta_per.stan"))
+```
+
+Model fit:
+
+```{r,fig.height=5}
+# shared R,C shared delta (green model)
+fit_ysd = stan(file="STAN/WK2_periodic/WK2_shared_delta_per.stan",
+               data=data_trial,
+               chains=3,
+               iter=1000,
+               seed=0
+)
+stan_trace(fit_ysd, pars = c("R", "C"), size=0.2)
+ex_ysd=extract(fit_ysd)
+df_ysd=data.frame(ex_ysd)
+```
+
+
+
+#### Plot 95% CIs for all methods (Figure 9 in the paper) 
+
+```{r echo=FALSE,fig.width = 6, fig.height = 4}
+l_post_wk2 = list(l_df_nnd=l_df_nnd, l_df_nwd=l_df_nwd, df_ycd=df_ycd, df_ysd=df_ysd, data=data_trial)
+# saveRDS(l_post_wk2, "Data/post_wk2_trial.rds")
+# common delta
+post_common = data.frame(extract(fit_yes_common_delta))
+Rpost_common=post_common[,paste0("R.",1:Ns)]
+Cpost_common=post_common[,paste0("C.",1:Ns)]
+# shared delta
+post_shared = data.frame(extract(fit_ysd))
+Rpost_shared=post_shared[,paste0("R.",1:Ns)]
+Cpost_shared=post_shared[,paste0("C.",1:Ns)]
+
+# indepedent 
+Rpost_ind = Cpost_ind =Rpost_ind_delta =Cpost_ind_delta = matrix(NA,nrow = nrow(Rpost_common), ncol = ncol(Rpost_common))
+
+for(i in 1:Ns){
+  Rpost_ind[,i]=post_nnd[[i]]$R
+  Cpost_ind[,i]=post_nnd[[i]]$C
+  Rpost_ind_delta[,i]=post_nwd[[i]]$R
+  Cpost_ind_delta[,i]=post_nwd[[i]]$C
+}
+
+# 95% CIs
+R_par_pool_common_CI=data.frame(t(apply(Rpost_common,2,quantile, probs=c(0.025, 0.975))))
+C_par_pool_common_CI=data.frame(t(apply(Cpost_common,2,quantile, probs=c(0.025, 0.975))))
+R_par_pool_shared_CI=data.frame(t(apply(Rpost_shared,2,quantile, probs=c(0.025, 0.975))))
+C_par_pool_shared_CI=data.frame(t(apply(Cpost_shared,2,quantile, probs=c(0.025, 0.975))))
+R_sep_CI=data.frame(t(apply(Rpost_ind,2,quantile, probs=c(0.025, 0.975))))
+C_sep_CI=data.frame(t(apply(Cpost_ind,2,quantile, probs=c(0.025, 0.975))))
+R_sep_CI=data.frame(t(apply(Rpost_ind,2,quantile, probs=c(0.025, 0.975))))
+C_sep_CI=data.frame(t(apply(Cpost_ind,2,quantile, probs=c(0.025, 0.975))))
+R_sep_delta_CI=data.frame(t(apply(Rpost_ind_delta,2,quantile, probs=c(0.025, 0.975))))
+C_sep_delta_CI=data.frame(t(apply(Cpost_ind_delta,2,quantile, probs=c(0.025, 0.975))))
+
+
+colnames(R_par_pool_common_CI) = c("low", "upper")
+colnames(C_par_pool_common_CI) = c("low", "upper")
+colnames(R_par_pool_shared_CI) = c("low", "upper")
+colnames(C_par_pool_shared_CI) = c("low", "upper")
+colnames(R_sep_CI) = c("low", "upper")
+colnames(C_sep_CI) = c("low", "upper")
+colnames(R_sep_delta_CI) = c("low", "upper")
+colnames(C_sep_delta_CI) = c("low", "upper")
+
+id=1:Ns
+R_par_pool_common_CI$par="R"
+R_par_pool_common_CI$id=id
+R_par_pool_shared_CI$par="R"
+R_par_pool_shared_CI$id=id
+R_par_pool_common_CI$sharing="yes/common delta"
+R_par_pool_shared_CI$sharing="yes/shared delta"
+C_par_pool_common_CI$par="C"
+C_par_pool_common_CI$id=id
+C_par_pool_common_CI$sharing="yes/common delta"
+C_par_pool_shared_CI$par="C"
+C_par_pool_shared_CI$id=id
+C_par_pool_shared_CI$sharing="yes/shared delta"
+
+R_sep_CI$par="R"
+R_sep_CI$id=id
+R_sep_CI$sharing="no-without delta"
+C_sep_CI$par="C"
+C_sep_CI$id=id
+C_sep_CI$sharing="no-without delta"
+
+R_sep_delta_CI$par="R"
+R_sep_delta_CI$id=id
+R_sep_delta_CI$sharing="no-with delta"
+C_sep_delta_CI$par="C"
+C_sep_delta_CI$id=id
+C_sep_delta_CI$sharing="no-with delta"
+
+df_CIs = rbind(R_sep_delta_CI,C_sep_delta_CI,
+               R_par_pool_shared_CI,C_par_pool_shared_CI,
+               R_par_pool_common_CI,C_par_pool_common_CI,
+               R_sep_CI,C_sep_CI)
+
+# saveRDS(df_CIs, file = "WK_trial_fig_data2.rds")
+# readRDS("WK_trial_fig_data2.rds")
+lbl=c(latex2exp('no-without $\\delta(t)$'), 
+                 latex2exp('no-with $\\delta(t)$'), 
+                 latex2exp('yes/common $\\delta(t)$'), 
+                 latex2exp('yes/shared $\\delta(t)$'))
+
+```
+```{r}
+ID = paste0("ID = ",1:8)
+df_CIs$ID = rep(ID,8)
+rid=df_CIs$id%in%c(2,4,6,8)
+(pl_cis=ggplot()+
+    geom_errorbar(data = df_CIs[rid,], aes(xmin=low, xmax=upper, y=sharing, color=sharing),size=1, width=0.5)+
+    facet_grid(par~ID)+theme_bw()+ylab("")+xlim(0.5,5)+#xlab("ID")+
+    scale_color_manual(
+      breaks=c('no-without delta', 'no-with delta', "yes/common delta", "yes/shared delta"),
+      values=c("magenta","firebrick","dodgerblue4", "forestgreen"),labels = lbl)+
+  theme(
+    axis.title.y=element_blank(),
+    axis.text.y=element_blank(),
+    axis.ticks.y=element_blank(),
+    legend.position="bottom",
+    legend.key.size = unit(0.8, 'cm'), #change legend key size
+    legend.key.height = unit(0.8, 'cm'), #change legend key height
+    legend.key.width = unit(0.8, 'cm'), #change legend key width
+    legend.title = element_text(size=11), #change legend title font size
+    legend.text = element_text(size=11),
+    axis.title.x = element_text(size=11))
+  )
+# ggsave("Figs/wk_trial_cis_new.pdf", plot = pl_cis, width = 17, height = 8.5, units = "cm")
+```
+
+#### Uncertainty reduction
+
+```{r}
+df_red=df_CIs[df_CIs$sharing == "no-with delta" | df_CIs$sharing == "yes/common delta" | df_CIs$sharing == "yes/shared delta",]
+df_red_C = df_red[df_red$par=="C",]
+df_red_C$dif = df_red_C$upper-df_red_C$low
+
+methd=c("no-with delta", "yes/common delta",  "yes/shared delta")
+red_common = (df_red_C$dif[df_red_C$sharing == methd[1]] - df_red_C$dif[df_red_C$sharing == methd[2]])/ df_red_C$dif[df_red_C$sharing == methd[1]]
+red_shared = (df_red_C$dif[df_red_C$sharing == methd[1]] - df_red_C$dif[df_red_C$sharing == methd[3]])/ df_red_C$dif[df_red_C$sharing == methd[1]]
+mu_lu_fn = function(df) c(mu = mean(df), lower=min(df), upper=max(df))
+# mu_lu_fn(red_common)
+# mu_lu_fn(red_shared)
+res_C = data.frame(common = as.vector(mu_lu_fn(red_common)), shared = as.vector(mu_lu_fn(red_shared)))
+rownames(res_C) = c("mean", "low", "upper")
+
+df_red_R = df_red[df_red$par=="R",]
+df_red_R$dif = df_red_R$upper-df_red_R$low
+
+red_common = (df_red_R$dif[df_red_R$sharing == methd[1]] - df_red_R$dif[df_red_R$sharing == methd[2]])/ df_red_R$dif[df_red_R$sharing == methd[1]]
+red_shared = (df_red_R$dif[df_red_R$sharing == methd[1]] - df_red_R$dif[df_red_R$sharing == methd[3]])/ df_red_R$dif[df_red_R$sharing == methd[1]]
+mu_lu_fn = function(df) c(mu = mean(df), lower=min(df), upper=max(df))
+# mu_lu_fn(red_common)
+# mu_lu_fn(red_shared)
+res_R = data.frame(common = as.vector(mu_lu_fn(red_common)), shared = as.vector(mu_lu_fn(red_shared)))
+rownames(res_R) = c("mean", "low", "upper")
+res_RC = list(R=res_R, C=res_C)
+# saveRDS(res_RC, file = "Data/reduction_WK_trial.rds")
+round(res_RC$R[1,],2)
+round(res_RC$C[1,],2)
+```
+
+
+### Session information
+
+```{r}
+sessionInfo()
+```
