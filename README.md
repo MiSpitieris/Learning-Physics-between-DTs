@@ -1,6 +1,6 @@
 # Learning Physics between Digital Twins with Low-Fidelity Models and Physics-Informed Gaussian Processes
 
-This repository is the official implementation of the paper "Learning Physics between Digital Twins with Low-Fidelity Models and Physics-Informed Gaussian Processes". 
+This repository is the official implementation of the paper "Learning between Digital Twins with Low-Fidelity Models and Physics-Informed Gaussian Processes". 
 
 <p align="center">
  <img src="Figs/DAG.png" alt="drawing" width="600"/> 
@@ -20,6 +20,7 @@ install.packages("rstan")
 install.packages("ggplot2")
 install.packages("SAVE")
 install.packages("latex2exp")
+install.packages("ggpubr")
 ```
 
 ## Notebooks
@@ -30,24 +31,16 @@ More specifically:
 
 
 - The **toy_paper_code.Rmd** contains the code of the results in Section 4.
-- The **WK_paper_code.Rmd** contains the code of the results in Section 5.
+- The **WK_simulation_study.Rmd** contains the code of the results in Section 5.2.
+- The **WK_real_data.Rmd** contains the code of the results in Section 5.3.
 - The **toy_appendix.Rmd** contains the code of the results in Appendix D.
-- The **WK_appendix.Rmd** contains the code of the results in Appendix E.
+- The **WK_appendix.Rmd** contains the code of the results in Appendix E.2.
+- The **WK_real_predictions.Rmd** contains the code of the results in Section E.3.
 
 All notebooks have also been exported as .pdf and .html files. 
 
-Running time ranges from several minutes up to ~30 minutes.
+Run time ranges from several minutes up to ~30 minutes.
 
-## Experiments
-The **Experiments** folder contains the raw code (same as in the Notebooks) to reproduce the results in the paper and Appendix. 
-
-More specifically:
-
-
-- The **toy_paper.R** contains the code of the results in Section 4.
-- The **WK_paper.R** contains the code of the results in Section 5.
-- The **toy_appendix.R** contains the code of the results in Appendix D.
-- The **WK_appendix.R** contains the code of the results in Appendix E.
 
 
 ## STAN
@@ -56,13 +49,12 @@ The **STAN** folder contains the stan code for the models in Sections 4, 5 and A
 More specifically:
 
 - The **toy** folder contains the stan code for the models in Section 4 and Appendix D.
-- The **WK2** folder contains the stan code for the models in Section 5 and Appendix E.
+- The **WK2** folder contains the stan code for the models in Section 5.2 and Appendix E.2.
+- The **WK2_periodic** folder contains the stan code for the models in Section 5.3 and Appendix E.3.
 
 ## Data
 The **Data** folder contains blood flow data used to simulate blood pressures in Section 4. It contains also the posterior distribution samples of the models fitted in **WK_paper_code.Rmd**.
 
-- **Inflow_time.rds** is the blood flow and time data.
-- **post_wk2.rds** is the posterior distribution samples.
 
 ## Figs
 The **Figs** folder contains the figures that can be exported by running the codes. To export the figures uncomment (remove #) before the ggsave functions in the codes.
