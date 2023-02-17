@@ -1,4 +1,4 @@
-# Learning Physics between Digital Twins with Low-Fidelity Models and Physics-Informed Gaussian Processes
+# Learning between Digital Twins with Low-Fidelity Models and Physics-Informed Gaussian Processes
 
 This repository is the official implementation of the paper "Learning between Digital Twins with Low-Fidelity Models and Physics-Informed Gaussian Processes". 
 
