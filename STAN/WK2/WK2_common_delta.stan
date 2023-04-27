@@ -62,14 +62,7 @@ for (i in 1:nP){
 
         // KIP (KIP = KPI')
         K[(nP + 1):(nP + nI), 1:nP] = K[1:nP, (nP + 1):(nP + nI)]';
-        // for (i in 1:nI){
-        //   for (j in 1:nP){
-        //     K[nP + i, j] = 0.1e1 / R * exp(-pow(tI[i] - tP[j], 0.2e1) * pow(rho, -0.2e1))
-        //     - 0.2e1 * C * (tI[i] - tP[j]) * pow(rho, -0.2e1)
-        //     * exp(-pow(tI[i] - tP[j], 0.2e1) * pow(rho, -0.2e1));
-        //     K[nP + i, j] = pow(alpha, 0.2e1) * K[nP + i, j];
-        //   }
-        // }        
+     
         // KI
         for (i in 1:(nI-1)){
           K[nP + i, nP +i] = 
@@ -145,11 +138,11 @@ parameters {
   real<lower=20> tau_muWK2;
 }
 transformed parameters {
-  real<lower=0> mu_wk2[Ns]; // physical parameters
+  real<lower=0> mu_wk2[Ns]; // PI prior mean
   real<lower=0> rho[Ns];    // length scale
   real<lower=0> alpha[Ns]; //marginal standard deviation
-  real<lower=0> R[Ns];
-  real<lower=0> C[Ns];
+  real<lower=0> R[Ns]; // physical parameters
+  real<lower=0> C[Ns]; // physical parameters
   // Non-centered parameterization of individual parameters
   for (s in 1:Ns) {
     rho[s] = exp(log(rho_m) + rho_s * rho_tilde[s]);
